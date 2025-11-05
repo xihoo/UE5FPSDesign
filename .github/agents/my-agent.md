@@ -1,6 +1,6 @@
 ---
-name:
-description:
+name: My Agent
+description: 这是一个UE5 支持多人PVE 的 FPS 游戏项目的设计文档的Agent
 ---
 
 # My Agent
