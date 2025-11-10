@@ -5,8 +5,9 @@
 类似土豆兄弟，随机地牢生成，FPS击杀敌人，然后通过升级，商店购买Item来提升自己，战胜敌人，探索随机地牢，最后通关。
 
 ## 模块
-1. Input
+1. Input （Enhanced Input + GAS标签映射）
 	1. Enhanced Input
+	2. 输入动作与 GameplayTag/Ability 映射（Input.* -> Ability.*）
 2. UI
 	1. menu
 	2. HUD

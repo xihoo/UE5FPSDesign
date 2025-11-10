@@ -28,6 +28,154 @@
 
 ---
 
+## Enhanced Input 与 GAS 集成
+
+为保证所有动作（射击、技能、交互、装填等）统一经过 Gameplay Ability System (GAS)，我们采用“输入动作(Input Action) -> Gameplay Tag -> Ability”三段式数据驱动映射，不在控制器里直接调用武器/角色函数，而是让 AbilitySystemComponent 处理激活、预测与取消。
+
+### 目标与优势
+1. 统一冷却、资源、状态检查（由 Ability 决定是否能激活）
+2. 支持客户端预测与服务器回滚（提高射击/技能响应）
+3. 通过标签与数据资产实现可热更新的输入绑定，不改 C++ 代码即可调整键位与能力分配
+4. 便于统计与可视化（能力激活事件统一来源）
+
+### 映射流程
+```
+UInputAction -> FGameplayTag(Input.Fire.Primary) -> UGameplayAbility(GA_FireWeaponAutomatic)
+```
+当 IA_Fire Started：
+1. 本地立即调用 ASC->TryActivateAbilitiesByTag(TagSet)（预测）
+2. 服务器验证（资源/状态/距离/冷却）
+3. Ability 内部执行实际射击逻辑（生成投射物、播放动画、应用 GameplayEffects）
+4. Released / Completed 时通知 Ability 停止（自动武器停止开火循环）
+
+### 标签命名规范（示例）
+- Input.Fire.Primary
+- Input.Aim
+- Input.Reload
+- Input.Weapon.Switch
+- Input.Weapon.Melee
+- Input.Grenade.Throw
+- Input.Interact
+- Input.Inventory.Open
+- Input.Scoreboard.Hold
+- Input.Skill.Slot.1~4
+
+能力标签（用于归类）：
+- Ability.Weapon.Fire.Automatic
+- Ability.Weapon.Fire.Semi
+- Ability.Weapon.Reload
+- Ability.Weapon.Throw.Grenade
+- Ability.Weapon.Melee
+- Ability.Skill.Active.Slot.1
+...
+
+输入标签与能力标签可以不同；输入绑定数据资产负责“输入标签 -> 触发的能力标签集合”。这样可以在同一次输入下激活多种配合能力（例如开火同时触发后坐力补偿 Ability）。
+
+### 数据资产设计：输入-能力绑定
+文件路径建议：`Content/Data/Input/InputAbilityBindings/DA_InputAbilityBindings_*.uasset`
+
+```cpp
+USTRUCT(BlueprintType)
+struct FInputAbilityBinding
+{
+    GENERATED_BODY();
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    TSoftObjectPtr<UInputAction> InputAction; // 需加载的 IA
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    FGameplayTag InputTag;                   // 输入标签（如 Input.Fire.Primary）
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    TArray<FGameplayTag> AbilityTagsToActivate; // 要尝试激活的能力标签集合
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    bool bPredictOnClient = true;            // 是否客户端预测
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    bool bCancelOnCompleted = true;          // 释放/Completed时是否尝试取消循环能力
+};
+
+UCLASS(BlueprintType)
+class UInputAbilityBindingData : public UDataAsset
+{
+    GENERATED_BODY();
+public:
+    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    TArray<FInputAbilityBinding> Bindings;
+};
+```
+
+### PlayerController / 角色桥接逻辑
+在 `AFPSPlayerController::SetupInputComponent()` 中，不直接绑定到 `Input_Fire_Started()`，而是绑定到一个通用处理：
+
+```cpp
+// 成员：
+UPROPERTY()
+UInputAbilityBindingData* InputAbilityBindingData;
+TMap<UInputAction*, FInputAbilityBinding> CachedBindings;
+
+void AFPSPlayerController::SetupInputComponent()
+{
+    Super::SetupInputComponent();
+    auto* EIC = Cast<UEnhancedInputComponent>(InputComponent);
+    BuildCachedBindings(); // 将 DataAsset 数据转入 CachedBindings
+
+    for (auto& Pair : CachedBindings)
+    {
+        UInputAction* IA = Pair.Key;
+        EIC->BindAction(IA, ETriggerEvent::Started, this, &AFPSPlayerController::OnAbilityInputStarted);
+        EIC->BindAction(IA, ETriggerEvent::Completed, this, &AFPSPlayerController::OnAbilityInputCompleted);
+    }
+}
+
+void AFPSPlayerController::OnAbilityInputStarted(const FInputActionInstance& Instance)
+{
+    if (const auto* Binding = CachedBindings.Find(Instance.GetSourceAction()))
+    {
+        if (auto* ASC = GetASC()) // 从角色或保存的指针获取 AbilitySystemComponent
+        {
+            FGameplayTagContainer Tags;
+            Tags.AppendTags(FGameplayTagContainer(Binding->AbilityTagsToActivate));
+            ASC->TryActivateAbilitiesByTag(Tags); // 客户端预测 + 服务器验证
+        }
+    }
+}
+
+void AFPSPlayerController::OnAbilityInputCompleted(const FInputActionInstance& Instance)
+{
+    if (const auto* Binding = CachedBindings.Find(Instance.GetSourceAction()))
+    {
+        if (Binding->bCancelOnCompleted)
+        {
+            if (auto* ASC = GetASC())
+            {
+                // 定向取消：查找激活中且标签匹配的循环能力
+                ASC->CancelAbilities(&BuildAbilityTagContainer(Binding->AbilityTagsToActivate));
+            }
+        }
+    }
+}
+```
+
+### 能力内部处理要点（示例：GA_FireWeaponAutomatic）
+```cpp
+// 关键点：重载 ShouldAbilityRespond / CanActivateAbility 控制资源与冷却
+// 使用 WaitInputRelease 或定时器控制循环开火
+// 使用 GameplayEffect 应用伤害 / 弹药消耗 / 后坐力
+// 预测：在 ActivateAbility 里生成本地特效，等待服务器确认再纠正状态
+```
+
+### 取消策略
+- 自动武器：Completed 触发能力 Cancel 或 Ability 自身在 OnInputRelease 中停止循环
+- 投掷物：Started 激活，能力内部监听释放时计算蓄力时间（可使用任务节点 WaitInputRelease）
+- 瞄准：使用 Toggle Ability（按下激活，按下再次取消）或 Hold 模式（Started 激活 + Completed 取消）由数据资产配置策略
+
+### 验证与回滚
+1. 客户端先行播放开火动画与枪口火焰（轻特效）
+2. 服务器确认子弹命中后广播可靠 RPC 增强特效（击中反馈）
+3. 服务器拒绝（冷却 / 弹药不足）时，ASC 回滚：客户端停止循环，调整弹药显示
+
+### 与技能栏能力统一
+IA_Skill1~4 同样走数据资产映射，可激活多个层级 Buff + 主技能。这样技能栏修改只改 DataAsset。
+
+---
+
 ## 输入动作定义
 
 ### 1. 移动相关
@@ -116,18 +264,23 @@
 #### IA_Fire - 开火
 ```cpp
 类型: Button
-描述: 射击武器
+描述: 通过 GAS 激活“武器开火”能力（自动 / 单发由能力决定）
 
 映射:
 - Mouse: Left Button
 - Gamepad: Right Trigger
 
+输入标签: Input.Fire.Primary
+激活能力标签示例:
+- Ability.Weapon.Fire.Automatic （当前装备是自动武器时匹配）
+- Ability.Weapon.Fire.Semi （换成单发武器时匹配）
+
 触发器:
-- Down - 按住持续射击（自动武器）
-- Pressed - 单次射击（单发武器）
+- Started: ASC->TryActivateAbilitiesByTag({Ability.Weapon.Fire.*})
+- Completed: 循环开火能力取消 / 停止定时器
 
 修饰器:
-- 无（武器类型决定触发模式）
+- 可选：为手柄添加 DeadZone，或加入触发压力映射（模拟扳机半扣触发蓄力武器）
 ```
 
 #### IA_Aim - 瞄准
@@ -817,18 +970,20 @@ void AFPSPlayerCharacter::ServerMove_Implementation(FVector_NetQuantize10 Locati
 ```
 
 ### 输入RPC
-关键输入动作需要通过RPC发送到服务器：
+使用 GAS 后不再手写大量单独的输入 RPC；客户端通过 `TryActivateAbilitiesByTag` 预测，服务器在 Ability 内部 `CanActivateAbility` 验证。仍可能需要少量专用 RPC：
 
 ```cpp
+// 仅在特殊情况下需要（如非标准能力激活流程或复杂交互对象验证）
 UFUNCTION(Server, Reliable)
-void ServerFire();
-
-UFUNCTION(Server, Reliable)
-void ServerReload();
-
-UFUNCTION(Server, Reliable)
-void ServerInteract(AActor* InteractTarget);
+void ServerConfirmInteract(AActor* InteractTarget); // Ability 中调用进行额外语义验证
 ```
+
+能力激活的网络路径：
+1. 客户端调用 TryActivateAbilitiesByTag（本地预测）
+2. 服务器验证 -> 广播激活 -> 状态复制（GameplayEffect 应用、属性变化）
+3. 客户端若被拒绝：ASC 自动回滚激活预期（EndAbility）
+
+循环类（开火、引导技能）通过 Ability 内部 `TickTask` 或 `WaitInputRelease` 控制，不需要额外 RPC。
 
 ---
 
@@ -847,7 +1002,10 @@ void ShowInputDebug(bool bShow);
 #define INPUT_LOG(Format, ...) \
     UE_LOG(LogInput, Log, TEXT(Format), ##__VA_ARGS__)
     
-INPUT_LOG("Fire Input Received - Value: %f", FireValue);
+// 示例：记录能力激活尝试与结果
+INPUT_LOG("Try Activate InputTag=%s", *InputTag.ToString());
+INPUT_LOG("Activated Ability Tags=%s", *Tags.ToString());
+INPUT_LOG("Cancel Ability Tags=%s", *CancelTags.ToString());
 ```
 
 ---
