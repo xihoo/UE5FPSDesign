@@ -164,3 +164,30 @@ Each major system has dedicated Chinese documentation in its respective folder:
 3. Set up GAS foundation (AbilitySystemComponent, base AttributeSet)
 4. Create modular component system based on documentation
 5. Implement data asset framework for configuration
+
+## Enhanced Input 与 GAS 输入绑定规范（新增）
+
+为保持输入与能力的一致性，所有会触发游戏逻辑的 InputAction 不直接调用组件方法，而是：
+
+```
+InputAction  ->  GameplayTag(Input.*)  ->  AbilitySystemComponent.TryActivateAbilitiesByTag(Ability.*)
+```
+
+### 设计要点
+1. DataAsset (`UInputAbilityBindingData`) 存储多个 `FInputAbilityBinding`：InputAction、InputTag、AbilityTags、预测策略、取消策略。
+2. PlayerController 在 SetupInputComponent 时遍历 DataAsset，批量绑定 Started / Completed 到通用处理函数。
+3. 自动/循环类能力（武器自动射击、蓄力投掷）通过 Ability 内部任务节点（`WaitInputRelease` / `Tick`）管理，不在控制器里开定时器。
+4. 通过标签扩展：同一个输入可激活多能力（开火 + 后坐力补偿 + 震动反馈）。
+5. 允许在运行时替换 DataAsset，实现模式切换（例如载具输入、特殊关卡规则）。
+
+### 标签命名建议
+- 输入标签：`Input.Fire.Primary`、`Input.Aim`、`Input.Reload`、`Input.Skill.Slot.1`
+- 能力标签：`Ability.Weapon.Fire.Automatic`、`Ability.Skill.Active.Slot.1`
+
+### 可扩展点
+- 引入“条件标签”数组：如果标签集合满足（角色状态、武器类型）才附加额外能力。
+- 热插拔：切换武器时刷新 CachedBindings 内的 AbilityTags 集合。
+
+### 调试
+- Exec 指令：`InputDump` 输出当前绑定的 InputAction -> AbilityTags 映射。
+- 在 Ability 激活与结束时打印标签，便于分析性能与冗余激活情况。

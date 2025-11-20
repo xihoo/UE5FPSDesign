@@ -57,7 +57,7 @@ GameInstance
 
 ### 主要系统模块
 
-1. **增强输入系统** - 基于 UE5 Enhanced Input，支持多种输入设备
+1. **增强输入系统** - 基于 UE5 Enhanced Input，支持多种输入设备，并通过 “InputAction -> GameplayTag -> Ability” 标签映射激活能力，实现预测与冷却统一
 2. **库存系统** - 基于定义/实例模式的物品管理
 3. **技能系统** - 与 GAS 深度集成的技能机制
 4. **射击框架** - 模块化武器系统，参考 SKG 框架设计
@@ -124,6 +124,8 @@ GameInstance
 3. 配置多人游戏项目设置
 4. 启用 GAS 插件集成
 5. 设置基础输入映射
+6. 创建输入-能力绑定数据资产（`UInputAbilityBindingData`），配置 Input.* 与 Ability.* 标签映射
+7. 在 PlayerController 中实现通用输入到 Ability 激活桥接（Started 激活 / Completed 取消）
 
 ## 开发约定
 
