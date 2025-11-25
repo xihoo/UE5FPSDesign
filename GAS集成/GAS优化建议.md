@@ -71,3 +71,170 @@ void UDFPSAbilitySystemComponent::ApplyInitAttributesAsGameplayEffect(...)
 ### 4.1 统一日志类别
 **现状**: 使用 `LogTemp`。
 **建议**: 定义 `DEFINE_LOG_CATEGORY_STATIC(LogDFPS_GAS, Log, All);`，便于过滤 GAS 相关日志。
+
+
+```
+
+// made by xihoo
+
+#include "DFPSAttributeRegistry.h"
+
+#include "DFPSAttributeSet.h"
+#include "GameplayTagsManager.h"
+#include "UObject/UnrealType.h"
+
+TMap<FGameplayTag, FGameplayAttribute> UDFPSAttributeRegistry::TagToAttributeMap;
+bool UDFPSAttributeRegistry::bIsInitialized = false;
+
+void UDFPSAttributeRegistry::Initialize()
+{
+	if (bIsInitialized)
+	{
+		return;
+	}
+
+	bIsInitialized = true;
+	RegisterAttributes();
+}
+
+void UDFPSAttributeRegistry::RegisterAttributes()
+{
+	TagToAttributeMap.Empty();
+
+	// 1. 使用反射获取 AttributeSet 中所有 FGameplayAttributeData 类型的属性
+	TMap<FString, FGameplayAttribute> NameToAttribute;
+	
+	for (TFieldIterator<FProperty> It(UDFPSAttributeSet::StaticClass()); It; ++It)
+	{
+		FStructProperty* StructProp = CastField<FStructProperty>(*It);
+		if (StructProp && StructProp->Struct == FGameplayAttributeData::StaticStruct())
+		{
+			FGameplayAttribute Attribute(*It);
+			NameToAttribute.Add(StructProp->GetName(), Attribute);
+		}
+	}
+
+	// 2. 遍历所有 GameplayTag，通过名称后缀（Leaf Name）自动匹配属性
+	// 约定：Tag "Attributes.Category.Health" 自动映射到属性 "Health"
+	UGameplayTagsManager& TagManager = UGameplayTagsManager::Get();
+	FGameplayTagContainer AllTags;
+	TagManager.RequestAllGameplayTags(AllTags, true);
+
+	for (const FGameplayTag& Tag : AllTags)
+	{
+		FString TagName = Tag.ToString();
+		
+		// 过滤：只处理 Attributes 开头的 Tag，避免误匹配
+		if (!TagName.StartsWith(TEXT("Attributes.")))
+		{
+			continue;
+		}
+
+		FString LeafName;
+		int32 LastDotIndex;
+		if (TagName.FindLastChar('.', LastDotIndex))
+		{
+			LeafName = TagName.RightChop(LastDotIndex + 1);
+		}
+		else
+		{
+			LeafName = TagName;
+		}
+
+		if (FGameplayAttribute* FoundAttr = NameToAttribute.Find(LeafName))
+		{
+			TagToAttributeMap.Add(Tag, *FoundAttr);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("DFPSAttributeRegistry: Auto-registered %d attributes via reflection."), TagToAttributeMap.Num());
+}
+
+FGameplayAttribute UDFPSAttributeRegistry::GetAttributeByTag(const FGameplayTag& AttributeTag)
+{
+	Initialize();
+
+	if (const FGameplayAttribute* FoundAttr = TagToAttributeMap.Find(AttributeTag))
+	{
+		return *FoundAttr;
+	}
+
+	return FGameplayAttribute();
+}
+
+bool UDFPSAttributeRegistry::TryGetAttributeByTag(const FGameplayTag& AttributeTag, FGameplayAttribute& OutAttribute)
+{
+	Initialize();
+
+	if (const FGameplayAttribute* FoundAttr = TagToAttributeMap.Find(AttributeTag))
+	{
+		OutAttribute = *FoundAttr;
+		return true;
+	}
+
+	OutAttribute = FGameplayAttribute();
+	return false;
+}
+
+bool UDFPSAttributeRegistry::IsValidAttributeTag(const FGameplayTag& AttributeTag)
+{
+	Initialize();
+	return TagToAttributeMap.Contains(AttributeTag);
+}
+
+```
+
+
+```
+
+void UDFPSAbilitySystemComponent::ApplyInitAttributesAsGameplayEffect(const TArray<TPair<FGameplayAttribute, float>>& InitAttributes)
+{
+	if (InitAttributes.Num() == 0)
+	{
+		return;
+	}
+
+	// 必须在 Authority 端执行
+	if (!GetOwnerActor() || !GetOwnerActor()->HasAuthority())
+	{
+		return;
+	}
+
+	// 动态创建一个 Instant GameplayEffect
+	// 使用 Transient 包，确保它不会被保存到磁盘，只在运行时存在
+	UGameplayEffect* InitEffect = NewObject<UGameplayEffect>(GetTransientPackage(), FName(TEXT("GE_DynamicInitAttributes")));
+	if (!InitEffect)
+	{
+		UE_LOG(LogTemp, Error, TEXT("DFPS ASC: Failed to create dynamic init effect!"));
+		return;
+	}
+
+	InitEffect->DurationPolicy = EGameplayEffectDurationType::Instant;
+
+	// 遍历属性列表，为每个属性添加一个 Modifier
+	for (const TPair<FGameplayAttribute, float>& Pair : InitAttributes)
+	{
+		const FGameplayAttribute& Attribute = Pair.Key;
+		const float Value = Pair.Value;
+
+		if (!Attribute.IsValid())
+		{
+			continue;
+		}
+
+		FGameplayModifierInfo ModInfo;
+		ModInfo.Attribute = Attribute;
+		ModInfo.ModifierOp = EGameplayModOp::Override; // 使用 Override 直接覆盖基值
+		ModInfo.ModifierMagnitude = FScalableFloat(Value);
+		
+		InitEffect->Modifiers.Add(ModInfo);
+	}
+
+	// 应用 GE
+	FGameplayEffectContextHandle ContextHandle = MakeEffectContext();
+	ContextHandle.AddSourceObject(this);
+
+	ApplyGameplayEffectToSelf(InitEffect, 1.0f, ContextHandle);
+}
+
+```
