@@ -544,9 +544,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay")
     bool bRotateMinimap = true;
     
-    // 语言
+    // 语言设置 (格式: zh-Hans, en, ja, ko 等)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay")
     FString Language = TEXT("zh-Hans");
+    
+    // 语言枚举 (便于蓝图使用，运行时从Language字符串解析)
+    UPROPERTY(Transient, BlueprintReadOnly, Category = "Gameplay")
+    EGameLanguage LanguageEnum = EGameLanguage::ChineseSimplified;
     
     // ========== 方法 ==========
     
@@ -565,6 +569,10 @@ public:
     // 应用控制设置
     UFUNCTION(BlueprintCallable, Category = "Settings")
     void ApplyControlSettings();
+    
+    // 应用语言设置
+    UFUNCTION(BlueprintCallable, Category = "Settings")
+    void ApplyLanguageSettings();
     
     // 获取键位显示名称
     UFUNCTION(BlueprintCallable, Category = "Settings")

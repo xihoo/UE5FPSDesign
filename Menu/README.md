@@ -10,7 +10,9 @@
 | **[MenuArchitecture.md](./MenuArchitecture.md)** | 架构图、类图、数据流图 |
 | **[QuickStart.md](./QuickStart.md)** | 快速开始指南，10步完成Menu系统集成 |
 | **[Implementation.md](./Implementation.md)** | C++实现代码示例 |
+| **[GameStartupFlow.md](./GameStartupFlow.md)** | 游戏启动时Menu系统初始化和显示流程 |
 | **[AdvancedGraphics.md](./AdvancedGraphics.md)** | DLSS、FSR、XeSS、帧生成、光追等高级图形设置 |
+| **[Localization.md](./Localization.md)** | 本地化多语言系统设计方案 |
 | **[UMGWorkflow.md](./UMGWorkflow.md)** | 基于C++基类的UMG制作详细流程 |
 | **[UMGExamples.md](./UMGExamples.md)** | UMG制作实例，含蓝图节点详解 |
 | **[CppToUMGFlow.md](./CppToUMGFlow.md)** | C++到UMG绑定流程图和排查指南 |
